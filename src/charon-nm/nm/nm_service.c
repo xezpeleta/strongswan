@@ -583,18 +583,23 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 	identification_t *id = NULL;
 	certificate_t *cert = NULL;
 	auth_cfg_t *auth;
-	const char *str, *method, *cert_source, *agent_user;
+	const char *str, *method, *cert_source, *agent_user, *pw = NULL;
 	chunk_t safe_file;
 
 	method = nm_setting_vpn_get_data_item(vpn, "method");
 	cert_source = nm_setting_vpn_get_data_item(vpn, "cert-source") ?: method;
 
+	/* legacy fallback, except when actually used as EAP password */
+	if (!streq(method, "cert-eap"))
+	{
+		pw = nm_setting_vpn_get_secret(vpn, "password");
+	}
+
 	if (streq(cert_source, "smartcard"))
 	{
 		char *pin;
 
-		pin = (char*)(nm_setting_vpn_get_secret(vpn, "pin") ?:
-					  nm_setting_vpn_get_secret(vpn, "password"));
+		pin = (char*)(nm_setting_vpn_get_secret(vpn, "pin") ?: pw);
 		if (pin)
 		{
 			id = find_smartcard_key(priv, pin);
@@ -661,7 +666,7 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 			char *secret;
 
 			secret = (char*)(nm_setting_vpn_get_secret(vpn, "userkey-password")
-							 ?: nm_setting_vpn_get_secret(vpn, "password"));
+							 ?: pw);
 			if (secret)
 			{
 				priv->creds->set_key_password(priv->creds, secret);
@@ -1059,6 +1064,21 @@ static gboolean connect_(NMVpnServicePlugin *plugin, NMConnection *connection,
 			return FALSE;
 		}
 	}
+	else if (streq(method, "cert-eap"))
+	{
+		if (!add_auth_cfg_cert(priv, vpn, peer_cfg, user, err))
+		{
+			peer_cfg->destroy(peer_cfg);
+			gateway->destroy(gateway);
+			return FALSE;
+		}
+		if (!add_auth_cfg_pw(priv, vpn, peer_cfg, err))
+		{
+			peer_cfg->destroy(peer_cfg);
+			gateway->destroy(gateway);
+			return FALSE;
+		}
+	}
 	else
 	{
 		g_set_error(err, NM_VPN_PLUGIN_ERROR, NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
@@ -1188,7 +1208,7 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 {
 	NMStrongswanPluginPrivate *priv;
 	NMSettingVpn *settings;
-	const char *method, *cert_source, *path;
+	const char *method, *cert_source, *path, *pw = NULL;
 	bool need_secret = FALSE;
 
 	priv = NM_STRONGSWAN_PLUGIN_GET_PRIVATE((NMStrongswanPlugin*)plugin);
@@ -1201,12 +1221,18 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 			streq(method, "eap-tls") ||
 			streq(method, "key") ||
 			streq(method, "agent") ||
-			streq(method, "smartcard"))
+			streq(method, "smartcard") ||
+			streq(method, "cert-eap"))
 		{
 			cert_source = nm_setting_vpn_get_data_item(settings, "cert-source");
 			if (!cert_source)
 			{
 				cert_source = method;
+			}
+			/* legacy fallback, unless used as actual EAP password */
+			if (!streq(method, "cert-eap"))
+			{
+				pw = nm_setting_vpn_get_secret(settings, "password");
 			}
 			if (streq(cert_source, "agent"))
 			{
@@ -1222,7 +1248,7 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 			else if (streq(cert_source, "smartcard"))
 			{
 				need_secret = !nm_setting_vpn_get_secret(settings, "pin") &&
-							  !nm_setting_vpn_get_secret(settings, "password");
+							  !pw;
 			}
 			else
 			{
@@ -1263,14 +1289,17 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 							need_secret = FALSE;
 						}
 						else if (nm_setting_vpn_get_secret(settings,
-														"userkey-password") ||
-								 nm_setting_vpn_get_secret(settings,
-														"password"))
+													"userkey-password") || pw)
 						{
 							need_secret = FALSE;
 						}
 					}
 				}
+			}
+			if (streq(method, "cert-eap") &&
+				!nm_setting_vpn_get_secret(settings, "password"))
+			{
+				need_secret = TRUE;
 			}
 		}
 		else if (streq(method, "eap") ||
