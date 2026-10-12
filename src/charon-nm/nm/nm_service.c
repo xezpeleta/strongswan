@@ -593,7 +593,8 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 	{
 		char *pin;
 
-		pin = (char*)nm_setting_vpn_get_secret(vpn, "password");
+		pin = (char*)(nm_setting_vpn_get_secret(vpn, "pin") ?:
+					  nm_setting_vpn_get_secret(vpn, "password"));
 		if (pin)
 		{
 			id = find_smartcard_key(priv, pin);
@@ -659,7 +660,8 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 		{
 			char *secret;
 
-			secret = (char*)nm_setting_vpn_get_secret(vpn, "password");
+			secret = (char*)(nm_setting_vpn_get_secret(vpn, "userkey-password")
+							 ?: nm_setting_vpn_get_secret(vpn, "password"));
 			if (secret)
 			{
 				priv->creds->set_key_password(priv->creds, secret);
@@ -1219,13 +1221,28 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 			}
 			else if (streq(cert_source, "smartcard"))
 			{
-				need_secret = !nm_setting_vpn_get_secret(settings, "password");
+				need_secret = !nm_setting_vpn_get_secret(settings, "pin") &&
+							  !nm_setting_vpn_get_secret(settings, "password");
 			}
 			else
 			{
+				NMSettingSecretFlags flags = NM_SETTING_SECRET_FLAG_NONE;
+
 				need_secret = TRUE;
 				path = nm_setting_vpn_get_data_item(settings, "userkey");
-				if (path)
+				/* if we don't have a key or the user/UI indicates no password
+				 * is required, just let connect() handle this */
+				if (!path)
+				{
+					need_secret = FALSE;
+				}
+				else if (nm_setting_get_secret_flags(NM_SETTING(settings),
+											"userkey-password", &flags, NULL) &&
+						 (flags & NM_SETTING_SECRET_FLAG_NOT_REQUIRED))
+				{
+					need_secret = FALSE;
+				}
+				else
 				{
 					private_key_t *key;
 					const char *user;
@@ -1245,7 +1262,10 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 							key->destroy(key);
 							need_secret = FALSE;
 						}
-						else if (nm_setting_vpn_get_secret(settings, "password"))
+						else if (nm_setting_vpn_get_secret(settings,
+														"userkey-password") ||
+								 nm_setting_vpn_get_secret(settings,
+														"password"))
 						{
 							need_secret = FALSE;
 						}
