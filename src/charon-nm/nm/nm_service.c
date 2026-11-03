@@ -725,6 +725,27 @@ static bool add_auth_cfg_cert(NMStrongswanPluginPrivate *priv,
 		auth->add(auth, AUTH_RULE_AAA_IDENTITY,
 				  identification_create_from_string("%any"));
 	}
+	else if (streq(method, "cert-eap"))
+	{	/* FortiGate eap-cert-auth compatibility: the certificate is
+		 * attached to an EAP-only authentication round instead of being
+		 * used for a signature-based round, which FortiGate rejects */
+		identification_t *eap_user;
+		const char *eap_name, *eap_pw;
+
+		auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_EAP);
+		auth->add(auth, AUTH_RULE_AAA_IDENTITY,
+				  identification_create_from_string("%any"));
+		eap_name = nm_setting_vpn_get_data_item(vpn, "user");
+		eap_user = identification_create_from_string(
+							eap_name ? (char*)eap_name : "%any");
+		eap_pw = nm_setting_vpn_get_secret(vpn, "password");
+		if (eap_pw)
+		{
+			priv->creds->set_username_password(priv->creds, eap_user,
+													(char*)eap_pw);
+		}
+		auth->add(auth, AUTH_RULE_EAP_IDENTITY, eap_user);
+	}
 	else
 	{
 		auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PUBKEY);
@@ -1068,14 +1089,8 @@ static gboolean connect_(NMVpnServicePlugin *plugin, NMConnection *connection,
 		}
 	}
 	else if (streq(method, "cert-eap"))
-	{
+	{	/* single EAP auth round carrying the certificate */
 		if (!add_auth_cfg_cert(priv, vpn, peer_cfg, user, err))
-		{
-			peer_cfg->destroy(peer_cfg);
-			gateway->destroy(gateway);
-			return FALSE;
-		}
-		if (!add_auth_cfg_pw(priv, vpn, peer_cfg, err))
 		{
 			peer_cfg->destroy(peer_cfg);
 			gateway->destroy(gateway);
