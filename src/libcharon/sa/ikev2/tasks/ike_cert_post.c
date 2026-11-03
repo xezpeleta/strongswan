@@ -286,8 +286,24 @@ static void build_certs(private_ike_cert_post_t *this, message_t *message)
 
 	payload = (auth_payload_t*)message->get_payload(message, PLV2_AUTH);
 	peer_cfg = this->ike_sa->get_peer_cfg(this->ike_sa);
-	if (!peer_cfg || !payload || payload->get_auth_method(payload) == AUTH_PSK)
-	{	/* no CERT payload for EAP/PSK */
+	if (!peer_cfg)
+	{
+		return;
+	}
+	if (!payload)
+	{	/* FortiGate eap-cert-auth compatibility: EAP-only authentication
+		 * with a client certificate attached.  Send the certificate
+		 * configured for the local EAP auth round in the first IKE_AUTH
+		 * request, which does not carry an AUTH payload. */
+		if (message->get_exchange_type(message) != IKE_AUTH ||
+			!message->get_request(message) ||
+			message->get_message_id(message) != 1)
+		{
+			return;
+		}
+	}
+	else if (payload->get_auth_method(payload) == AUTH_PSK)
+	{	/* no CERT payload for PSK */
 		return;
 	}
 
